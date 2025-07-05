@@ -1,0 +1,404 @@
+import pygame
+import random
+import matplotlib.pyplot as plt
+
+pygame.init()
+clock = pygame.time.Clock()
+
+
+# --- Settings ---
+WIDTH, HEIGHT = 600, 600
+GRID_SIZE = 50
+CELL_SIZE = WIDTH // GRID_SIZE
+FPS = 10
+
+# Constants
+DAYS_TO_RECOVER = 15
+ECONOMIC_BASE_PRODUCTIVITY = 1000
+
+# Virus variants data
+variants = {
+    "original": {
+        "infection_chance": 0.15,
+        "mortality_rate": 0.02,
+        "immune_escape": 0.0,   # vaccine works well
+        "days_to_recover": 15
+    },
+    "variantA": {
+        "infection_chance": 0.25,
+        "mortality_rate": 0.03,
+        "immune_escape": 0.1,  # 10% vaccine escape
+        "days_to_recover": 12
+    },
+    "variantB": {
+        "infection_chance": 0.35,
+        "mortality_rate": 0.05,
+        "immune_escape": 0.2,  # 20% vaccine escape
+        "days_to_recover": 10
+    },
+    "deadly": {  # Vaccine ineffective
+        "infection_chance": 0.4,
+        "mortality_rate": 0.7,
+        "immune_escape": 1.0,  # fully escapes vaccine
+        "days_to_recover": 12
+    }
+}
+
+# States
+SUSCEPTIBLE = 0
+INFECTED = 1
+RECOVERED = 2
+DEAD = 3
+VACCINATED = 4
+
+# Colors for states
+COLORS = {
+    SUSCEPTIBLE: (200, 200, 200),
+    INFECTED: (255, 0, 0),
+    RECOVERED: (0, 255, 0),
+    DEAD: (50, 50, 50),
+    VACCINATED: (100, 200, 255)
+}
+
+# Age group colors
+AGE_CHILD = (50, 150, 255)
+AGE_ADULT = (180, 180, 180)
+AGE_ELDER = (255, 165, 0)
+
+# Hospital class
+class Hospital:
+    def __init__(self, name, capacity):
+        self.name = name
+        self.capacity = capacity
+        self.current_patients = 0
+
+    def admit(self, person):
+        if self.current_patients < self.capacity:
+            person["hospitalized"] = True
+            self.current_patients += 1
+            return True
+        return False
+
+    def discharge(self, person):
+        if person["hospitalized"]:
+            person["hospitalized"] = False
+            self.current_patients -= 1
+
+# Create 4 hospitals with different capacities
+hospitals = [
+    Hospital("North General", 15),
+    Hospital("East Medical", 20),
+    Hospital("South Health", 10),
+    Hospital("West Clinic", 25),
+]
+
+def admit_to_any_hospital(person):
+    # Try admitting to any hospital in order
+    for hospital in hospitals:
+        if hospital.admit(person):
+            return True
+    return False
+
+def discharge_from_any_hospital(person):
+    # Discharge from hospital if hospitalized
+    for hospital in hospitals:
+        if person["hospitalized"]:
+            hospital.discharge(person)
+            return
+
+# Age generation
+def random_age():
+    r = random.random()
+    if r < 0.2:
+        return random.randint(0, 17)     # children
+    elif r < 0.85:
+        return random.randint(18, 77)    # adults
+    else:
+        return random.randint(78, 100)   # elders
+
+# Create person with variant field
+def create_person():
+    return {
+        "age": random_age(),
+        "state": SUSCEPTIBLE,
+        "days_infected": 0,
+        "hospitalized": False,
+        "vaccinated": False,
+        "variant": None  # no variant until infected
+    }
+
+# Initialize population grid
+population = [[create_person() for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+
+# Infect some initially with original variant
+for _ in range(5):
+    x, y = random.randint(0, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
+    population[x][y]["state"] = INFECTED
+    population[x][y]["variant"] = "original"
+
+# Infect a couple with deadly variant at random later on
+def introduce_deadly_variant():
+    for _ in range(3):
+        x, y = random.randint(0, GRID_SIZE - 1), random.randint(0, GRID_SIZE - 1)
+        if population[x][y]["state"] == SUSCEPTIBLE:
+            population[x][y]["state"] = INFECTED
+            population[x][y]["variant"] = "deadly"
+
+def neighbors(x, y):
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
+                yield nx, ny
+
+def age_vulnerability(age):
+    if age < 18:
+        return 0.5
+    elif age >= 78:
+        return 3.0
+    else:
+        return 1.0
+
+def vaccination_effectiveness(person, variant_name):
+    if not person["vaccinated"]:
+        return 1.0
+    variant = variants[variant_name]
+    # Vaccination reduces infection risk by (1 - immune_escape)
+    effectiveness = 1.0 - variant["immune_escape"]
+    # Ensure it does not go below 0 (can't have negative chance)
+    return max(effectiveness, 0.0)
+
+# Add to global config or constants
+LOCKDOWN_THRESHOLD = 0.1  # If more than 10% are infected, initiate lockdown
+LOCKDOWN_INFECTION_REDUCTION = 0.5  # Infection chance is halved
+HOSPITAL_EXPANSION_DAY = 30
+NEW_BEDS_PER_EXPANSION = 50
+BIRTH_RATE = 0.002  # Chance per day per person for a new immune child to be born
+
+# In your simulate_day() function, update logic:
+def simulate_day(day):
+    global population
+
+    # Dynamic lockdown policy
+    infected_count = sum(1 for row in population for p in row if p["state"] == INFECTED)
+    lockdown = infected_count > GRID_SIZE * GRID_SIZE * LOCKDOWN_THRESHOLD
+
+    # Expand hospital capacity
+    if day % HOSPITAL_EXPANSION_DAY == 0:
+        for hosp in hospitals:
+            hosp.capacity += NEW_BEDS_PER_EXPANSION
+
+    new_population = [[person.copy() for person in row] for row in population]
+
+    for x in range(GRID_SIZE):
+        for y in range(GRID_SIZE):
+            person = population[x][y]
+            state = person["state"]
+
+            # Vaccination phases:
+            if day == 10:
+                if person["state"] == SUSCEPTIBLE and (person["age"] < 18 or person["age"] >= 78):
+                    new_population[x][y]["vaccinated"] = True
+                    new_population[x][y]["state"] = VACCINATED
+            elif day == 30:
+                if person["state"] == SUSCEPTIBLE and (18 <= person["age"] < 78):
+                    new_population[x][y]["vaccinated"] = True
+                    new_population[x][y]["state"] = VACCINATED
+            elif day == 50:
+                if person["state"] in [SUSCEPTIBLE, VACCINATED, RECOVERED]:
+                    new_population[x][y]["vaccinated"] = True
+                    new_population[x][y]["state"] = VACCINATED
+
+            if state == INFECTED:
+                variant_name = person["variant"]
+                variant = variants[variant_name]
+
+                # Infect neighbors
+                for nx, ny in neighbors(x, y):
+                    neighbor = population[nx][ny]
+                    if neighbor["state"] in [SUSCEPTIBLE, VACCINATED, RECOVERED]:
+                        infect_chance = variant["infection_chance"] * vaccination_effectiveness(neighbor, variant_name)
+                        if lockdown:
+                            infect_chance *= LOCKDOWN_INFECTION_REDUCTION
+                        if random.random() < infect_chance:
+                            new_population[nx][ny]["state"] = INFECTED
+                            new_population[nx][ny]["days_infected"] = 0
+                            new_population[nx][ny]["variant"] = variant_name
+
+                # Increase infection days
+                person_days = person["days_infected"] + 1
+                new_population[x][y]["days_infected"] = person_days
+
+                # Hospital admission logic
+                if not person["hospitalized"] and person_days > variant["days_to_recover"] // 3:
+                    admitted = admit_to_any_hospital(new_population[x][y])
+
+                # Mortality calculation
+                mortality_multiplier = age_vulnerability(person["age"])
+                if person["hospitalized"]:
+                    mortality_multiplier *= 0.5
+                else:
+                    mortality_multiplier *= 2.0
+
+                if person_days >= variant["days_to_recover"]:
+                    if random.random() < variant["mortality_rate"] * mortality_multiplier:
+                        new_population[x][y]["state"] = DEAD
+                        discharge_from_any_hospital(new_population[x][y])
+                    else:
+                        new_population[x][y]["state"] = RECOVERED
+                        discharge_from_any_hospital(new_population[x][y])
+
+    # Births
+    new_births = []
+    for x in range(GRID_SIZE):
+        for y in range(GRID_SIZE):
+            person = population[x][y]
+            if random.random() < BIRTH_RATE:
+                new_x = random.randint(0, GRID_SIZE - 1)
+                new_y = random.randint(0, GRID_SIZE - 1)
+                if population[new_x][new_y]["state"] == DEAD:
+                    new_population[new_x][new_y] = create_person()
+                    new_population[new_x][new_y]["state"] = RECOVERED
+
+    population = new_population
+
+def draw_population(screen):
+    for x in range(GRID_SIZE):
+        for y in range(GRID_SIZE):
+            person = population[x][y]
+            state = person["state"]
+            base_color = COLORS[state]
+
+            # Age color overlay
+            if person["age"] < 18:
+                age_color = AGE_CHILD
+            elif person["age"] >= 78:
+                age_color = AGE_ELDER
+            else:
+                age_color = AGE_ADULT
+
+            # Blend colors
+            color = tuple((bc + ac) // 2 for bc, ac in zip(base_color, age_color))
+
+            # Differentiate variants by border color (only for infected)
+            if state == INFECTED:
+                variant = person.get("variant", "original")
+                if variant == "original":
+                    border_color = (255, 255, 255)
+                elif variant == "variantA":
+                    border_color = (255, 255, 0)  # yellow
+                elif variant == "variantB":
+                    border_color = (0, 255, 255)  # cyan
+                elif variant == "deadly":
+                    border_color = (255, 0, 255)  # magenta
+                else:
+                    border_color = (255, 255, 255)
+            else:
+                border_color = None
+
+            rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+            pygame.draw.rect(screen, color, rect)
+            if person["hospitalized"]:
+                pygame.draw.rect(screen, (255, 255, 255), rect, 2)  # white border for hospitalization
+            if border_color:
+                pygame.draw.rect(screen, border_color, rect, 2)
+
+def count_states():
+    counts = {SUSCEPTIBLE: 0, INFECTED: 0, RECOVERED: 0, DEAD: 0, VACCINATED: 0}
+    for row in population:
+        for person in row:
+            counts[person["state"]] += 1
+    return counts
+
+def economic_impact():
+    healthy_count = 0
+    total = GRID_SIZE * GRID_SIZE
+    for row in population:
+        for person in row:
+            if person["state"] in [SUSCEPTIBLE, VACCINATED, RECOVERED]:
+                healthy_count += 1
+    productivity = ECONOMIC_BASE_PRODUCTIVITY * (healthy_count / total)
+    return productivity
+
+def draw_dashboard(screen, day, counts, productivity):
+    font = pygame.font.SysFont(None, 24)
+    texts = [
+        f"Day: {day}",
+        f"Susceptible: {counts[SUSCEPTIBLE]}",
+        f"Infected: {counts[INFECTED]}",
+        f"Recovered: {counts[RECOVERED]}",
+        f"Dead: {counts[DEAD]}",
+        f"Vaccinated: {counts[VACCINATED]}",
+        f"Hospital beds: {sum(h.current_patients for h in hospitals)}/{sum(h.capacity for h in hospitals)}",
+        f"Economic productivity: {productivity:.2f}"
+    ]
+    y = 10
+    for text in texts:
+        img = font.render(text, True, (255, 255, 255))
+        screen.blit(img, (10, y))
+        y += 20
+
+def main():
+    global day
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Epidemic Simulator with Multiple Hospitals & Variants")
+    clock = pygame.time.Clock()
+
+    day = 0
+    running = True
+
+    stats = {"S": [], "I": [], "R": [], "D": [], "V": [], "Econ": []}
+
+    while running:
+        clock.tick(FPS)  # <-- indent fixed here
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        simulate_day(day)
+        counts = count_states()
+        productivity = economic_impact()
+
+        stats["S"].append(counts[SUSCEPTIBLE])
+        stats["I"].append(counts[INFECTED])
+        stats["R"].append(counts[RECOVERED])
+        stats["D"].append(counts[DEAD])
+        stats["V"].append(counts[VACCINATED])
+        stats["Econ"].append(productivity)
+
+        screen.fill((0, 0, 0))
+        draw_population(screen)
+        draw_dashboard(screen, day, counts, productivity)
+        pygame.display.flip()
+
+        day += 1
+
+        if counts[INFECTED] == 0 or day > 100:
+            running = False
+
+    # Plot after simulation ends
+    days = list(range(day))
+    plt.plot(days, stats["S"], label="Susceptible")
+    plt.plot(days, stats["I"], label="Infected")
+    plt.plot(days, stats["R"], label="Recovered")
+    plt.plot(days, stats["D"], label="Dead")
+    plt.plot(days, stats["V"], label="Vaccinated")
+    plt.xlabel("Days")
+    plt.ylabel("Individuals")
+    plt.title("Epidemic Simulation States Over Time")
+    plt.legend()
+    plt.show()
+
+    plt.figure()
+    plt.plot(days, stats["Econ"], label="Economic Productivity")
+    plt.xlabel("Days")
+    plt.ylabel("Productivity")
+    plt.title("Economic Impact Over Time")
+    plt.legend()
+    plt.show()
+
+if __name__ == "__main__":
+    main()
